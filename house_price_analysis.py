@@ -7,6 +7,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
 
 # Load the dataset
 csv_path = r'C:\Users\Zenbook\PycharmProjects\pythonProject\zameen-updated.csv'
@@ -23,10 +24,25 @@ if 'Area Size' in df.columns:
     df['Area Size'] = df['Area Size'].replace(r'[^\d.]+', '', regex=True).astype(float)
 
 # Handle missing values separately for numeric and non-numeric columns
-numeric_cols = df.select_dtypes(include=[np.number]).columns
+numeric_cols = df.select_dtypes(include=[np.number]).columns.drop('price')
 non_numeric_cols = df.select_dtypes(exclude=[np.number]).columns
-df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
-df[non_numeric_cols] = df[non_numeric_cols].fillna('Unknown')
+numeric_imputer = SimpleImputer(strategy='mean')
+non_numeric_imputer = SimpleImputer(strategy='most_frequent')
+
+df[numeric_cols] = numeric_imputer.fit_transform(df[numeric_cols])
+df[non_numeric_cols] = non_numeric_imputer.fit_transform(df[non_numeric_cols])
+
+# Handle infinite values
+df.replace([np.inf, -np.inf], np.nan, inplace=True)
+df.fillna(0, inplace=True)
+
+# Feature Engineering
+if 'date_added' in df.columns:
+    df['date_added'] = pd.to_datetime(df['date_added'], errors='coerce')
+    df['age'] = 2024 - df['date_added'].dt.year
+    df['age'] = df['age'].fillna(df['age'].mean())
+
+df['bedrooms_per_floor'] = df['bedrooms'] / (df['Area Size'] / 272)  # Assuming 1 Marla = 272 sq.ft.
 
 # Function to convert prices to millions and remove decimals
 def to_millions(price):
@@ -99,7 +115,7 @@ if 'province_name' in df.columns:
 
 # Encode categorical features
 encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-categorical_cols = ['province_name', 'city', 'location', 'property_type']
+categorical_cols = ['province_name', 'city', 'location', 'property_type', 'purpose']
 encoded_categorical_data = encoder.fit_transform(df[categorical_cols])
 encoded_categorical_df = pd.DataFrame(encoded_categorical_data, columns=encoder.get_feature_names_out(categorical_cols))
 df = df.join(encoded_categorical_df)
@@ -120,11 +136,15 @@ plt.show()
 
 # Prepare the data for modeling
 # Drop non-relevant columns for prediction
-relevant_cols = ['property_id', 'location_id', 'price', 'latitude', 'longitude', 'baths', 'bedrooms', 'Area Size'] + list(encoded_categorical_df.columns)
-df = df[relevant_cols]
-
-X = df.drop(['price'], axis=1)
+relevant_cols = ['property_id', 'location_id', 'latitude', 'longitude', 'baths', 'bedrooms', 'Area Size', 'age', 'bedrooms_per_floor'] + list(encoded_categorical_df.columns)
+X = df[relevant_cols]
 y = df['price']
+
+# Ensure there are no missing values in the dataset
+if X.isnull().sum().sum() > 0:
+    print("There are missing values in the dataset. Imputing again...")
+    X.loc[:, numeric_cols] = numeric_imputer.fit_transform(X[numeric_cols])
+    X.loc[:, non_numeric_cols] = non_numeric_imputer.fit_transform(X[non_numeric_cols])
 
 # Split into training and testing
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -152,30 +172,27 @@ print(f'Linear Regression R2: {lr_r2:.3f}')
 print(f'Random Forest MSE: {rf_mse:.3f}')
 print(f'Random Forest R2: {rf_r2:.3f}')
 
-# Predict future prices
-new_data = pd.DataFrame({
-    'Area Size': [2500],
-    'bedrooms': [4],
-    'baths': [3],
-    'property_id': [0],
-    'location_id': [0]
+# Define the hypothetical scenarios
+scenarios = pd.DataFrame({
+    'Area Size': [2720, 5440, 1360, 3536],  # Area sizes for 10 Marla, 1 Kanal, 5 Marla, 13 Marla
+    'bedrooms': [5, 8, 3, 4],
+    'baths': [4, 6, 2, 3],
+    'latitude': [33.6844, 24.8607, 31.5497, 32.5734],  # Hypothetical latitudes
+    'longitude': [73.0479, 67.0011, 74.3436, 74.3098], # Hypothetical longitudes
+    'age': [0, 0, 0, 0],  # Hypothetical age values
+    'bedrooms_per_floor': [5 / (2720 / 272), 8 / (5440 / 272), 3 / (1360 / 272), 4 / (3536 / 272)]
 })
 
-# Reindex to match training data
-new_data = new_data.reindex(columns=X.columns, fill_value=0)
+# Predict the prices for the scenarios
+scenario_lr_predictions = lr_model.predict(scenarios)
+scenario_rf_predictions = rf_model.predict(scenarios)
 
-# Predict using the random forest model
-future_price_prediction = rf_model.predict(new_data)
-predicted_price_in_millions = to_millions(future_price_prediction[0])
-print(f'Predicted future price: {predicted_price_in_millions} Million')
+# Print the predictions
+print("\nPredicted Prices for Scenarios (in Millions):")
+print("Linear Regression Predictions:")
+for i, pred in enumerate(scenario_lr_predictions):
+    print(f"Scenario {i + 1}: ${pred / 1_000_000:.3f} Million")
 
-# Plot a line chart to show the prediction of the price
-plt.figure(figsize=(10, 6))
-plt.plot(y_test.reset_index(drop=True), label='Actual Prices', marker='o')
-plt.plot(lr_predictions, label='Linear Regression Predictions', linestyle='--')
-plt.plot(rf_predictions, label='Random Forest Predictions', linestyle='--')
-plt.title('Actual vs Predicted House Prices')
-plt.xlabel('Index')
-plt.ylabel('Price')
-plt.legend()
-plt.show()
+print("Random Forest Predictions:")
+for i, pred in enumerate(scenario_rf_predictions):
+    print(f"Scenario {i + 1}: ${pred / 1_000_000:.3f} Million")
